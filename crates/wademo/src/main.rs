@@ -241,8 +241,13 @@ fn read_varint(data: &[u8], pos: &mut usize) -> Result<u64, String> {
     }
 }
 
+/// A decoded protobuf length-delimited field: its number and raw bytes.
+type Field = (u64, Vec<u8>);
+/// The three byte-strings recovered from a `ServerHello`: ephemeral, static, payload.
+type ServerHelloParts = (Vec<u8>, Vec<u8>, Vec<u8>);
+
 /// Walk length-delimited fields, returning `(field_no, bytes)` for each.
-fn iter_fields(data: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, String> {
+fn iter_fields(data: &[u8]) -> Result<Vec<Field>, String> {
     let mut out = Vec::new();
     let mut pos = 0;
     while pos < data.len() {
@@ -269,7 +274,7 @@ fn iter_fields(data: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, String> {
 }
 
 /// Parse HandshakeMessage -> ServerHello, returning (ephemeral, static, payload).
-fn parse_server_hello(frame: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+fn parse_server_hello(frame: &[u8]) -> Result<ServerHelloParts, String> {
     let top = iter_fields(frame)?;
     let server_hello = top
         .into_iter()
