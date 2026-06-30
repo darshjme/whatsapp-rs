@@ -4,35 +4,34 @@
 //! authenticated, encrypted channel that carries [`wabin`](https://docs.rs/wabin) stanzas:
 //!
 //! - [`frame`] — the 3-byte length framing and stream reassembly, plus the connection header.
-//! - [`handshake`] — the `Noise_XX_25519_AESGCM_SHA256` handshake and the post-handshake
-//!   [`Transport`](handshake::Transport) cipher.
+//! - [`noise`] — a hand-rolled `Noise_XX_25519_AESGCM_SHA256` handshake (byte-faithful to
+//!   WhatsApp's implementation) and the post-handshake [`NoiseTransport`](noise::NoiseTransport).
 //!
 //! This crate is deliberately **transport-agnostic** (bytes in, bytes out). The actual socket
-//! (TCP or WebSocket) and the `ClientPayload` protobuf are supplied by `waclient`.
+//! (TCP or WebSocket), the protobuf `HandshakeMessage` envelopes, and the `ClientPayload` are
+//! supplied by `waclient`.
 //!
-//! ## Typical flow (client)
+//! ## Client handshake sketch
 //! ```no_run
-//! use wanoise::frame::{wa_conn_header, encode_frame, FrameReader};
-//! use wanoise::handshake::{Handshake, generate_keypair};
+//! use wanoise::frame::{wa_conn_header, encode_frame};
+//! use wanoise::noise::XxInitiator;
 //!
-//! // Persist this across logins — it's the device identity.
-//! let identity = generate_keypair()?;
-//! let prologue = wa_conn_header();
-//!
-//! let mut hs = Handshake::new_initiator(&identity.private, &prologue)?;
-//! // 1. send the connection header, then framed handshake message 1
-//! let mut outbound = prologue.to_vec();
-//! encode_frame(&hs.write_message(&[])?, &mut outbound)?;
-//! // ... write `outbound` to the socket, read the server's reply into `FrameReader` ...
+//! let prologue = wa_conn_header();          // WA 06 03
+//! let mut hs = XxInitiator::new(&prologue);
+//! let client_hello_ephemeral = hs.ephemeral();   // -> put in a ClientHello protobuf, framed & sent
+//! // ... receive ServerHello fields from the wire ...
+//! // let (server_static, cert) = hs.read_server_hello(&server_eph, &enc_static, &enc_payload)?;
+//! let mut first = prologue.to_vec();
+//! encode_frame(&[], &mut first)?;
 //! # Ok::<(), wanoise::Error>(())
 //! ```
 
 #![forbid(unsafe_code)]
 
 pub mod frame;
-pub mod handshake;
+pub mod noise;
 
-pub use handshake::{generate_keypair, Handshake, Keypair, Transport};
+pub use noise::{dh, keypair, NoiseState, NoiseTransport, XxInitiator};
 
 /// Errors from the transport layer.
 #[derive(Debug, thiserror::Error)]
@@ -40,10 +39,13 @@ pub enum Error {
     /// A frame exceeded the 3-byte (16 MiB) length limit.
     #[error("frame too large: {0} bytes (max {max})", max = crate::frame::MAX_FRAME_LEN)]
     FrameTooLarge(usize),
-    /// The hard-coded Noise parameter string failed to parse (should be unreachable).
-    #[error("invalid noise parameters")]
-    BadParams,
-    /// An error from the underlying Noise implementation (handshake/crypto failure).
-    #[error("noise error: {0}")]
-    Noise(#[from] snow::Error),
+    /// An AEAD operation was attempted before the first key was derived.
+    #[error("noise cipher not initialized yet")]
+    NoiseUninitialized,
+    /// An AEAD encrypt/decrypt (tag verification) failed.
+    #[error("crypto error: {0}")]
+    Crypto(&'static str),
+    /// A key or field had an unexpected length.
+    #[error("bad length: {0}")]
+    BadLength(&'static str),
 }
