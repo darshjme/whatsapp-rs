@@ -80,12 +80,35 @@ fn web_info() -> Vec<u8> {
     b
 }
 
+/// DeviceProps.HistorySyncConfig — the capability flags a current client advertises (whatsmeow's
+/// values). Their presence is part of how the server recognizes an up-to-date client; omitting them
+/// can trigger a `<failure reason="405">`.
+fn history_sync_config() -> Vec<u8> {
+    let mut b = Vec::new();
+    put_varint_field(&mut b, 3, 10240); // storageQuotaMb
+    put_varint_field(&mut b, 4, 1); // inlineInitialPayloadInE2EeMsg
+    put_varint_field(&mut b, 6, 0); // supportCallLogHistory
+    put_varint_field(&mut b, 7, 1); // supportBotUserAgentChatHistory
+    put_varint_field(&mut b, 8, 1); // supportCagReactionsAndPolls
+    put_varint_field(&mut b, 9, 1); // supportBizHostedMsg
+    put_varint_field(&mut b, 10, 1); // supportRecentSyncChunkMessageCountTuning
+    put_varint_field(&mut b, 11, 1); // supportHostedGroupMsg
+    put_varint_field(&mut b, 12, 1); // supportFbidBotChatHistory
+    put_varint_field(&mut b, 14, 1); // supportMessageAssociation
+    put_varint_field(&mut b, 15, 1); // supportGroupHistory
+    put_varint_field(&mut b, 19, 60); // thumbnailSyncDaysLimit
+    put_varint_field(&mut b, 21, 1); // supportManusHistory
+    put_varint_field(&mut b, 22, 1); // supportHatchHistory
+    b
+}
+
 fn device_props(os: &str) -> Vec<u8> {
     let mut b = Vec::new();
     put_len_field(&mut b, 1, os.as_bytes()); // os (the device label)
     put_len_field(&mut b, 2, &app_version(0, 1, 0)); // version = 0.1.0
     put_varint_field(&mut b, 3, 0); // platformType = UNKNOWN
     put_varint_field(&mut b, 4, 0); // requireFullSync = false
+    put_len_field(&mut b, 5, &history_sync_config()); // historySyncConfig
     b
 }
 
