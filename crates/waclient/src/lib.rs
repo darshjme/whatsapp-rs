@@ -17,7 +17,7 @@ pub mod device;
 pub mod pairing;
 
 pub use device::{DeviceIdentity, KeyPair, SignedPreKey};
-pub use pairing::{qr_payload, RefQueue};
+pub use pairing::{complete_pair_success, qr_payload, PairSuccess, RefQueue};
 
 /// Errors from the client layer.
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +25,9 @@ pub enum Error {
     /// Failure serializing or deserializing the device keystore.
     #[error("keystore error: {0}")]
     Store(String),
+    /// A pairing step failed verification (HMAC, signature, or malformed identity).
+    #[error("pairing error: {0}")]
+    Pairing(&'static str),
     /// An error bubbled up from the transport/crypto layer.
     #[error(transparent)]
     Transport(#[from] wanoise::Error),

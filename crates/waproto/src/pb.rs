@@ -99,6 +99,54 @@ pub fn get_field(fields: &[LenField], field_no: u64) -> Option<&[u8]> {
         .map(|(_, b)| b.as_slice())
 }
 
+/// A decoded protobuf field value (the wire types we use: varint and length-delimited).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Value {
+    Varint(u64),
+    Bytes(Vec<u8>),
+}
+
+/// Parse every field of a message, returning `(field_no, value)` for varint and length-delimited
+/// fields. 64-bit and 32-bit fixed fields are skipped (consumed but not returned).
+pub fn parse(data: &[u8]) -> Result<Vec<(u64, Value)>, Error> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        let key = read_varint(data, &mut pos)?;
+        let field_no = key >> 3;
+        match key & 7 {
+            0 => out.push((field_no, Value::Varint(read_varint(data, &mut pos)?))),
+            2 => {
+                let len = read_varint(data, &mut pos)? as usize;
+                let end = pos.checked_add(len).ok_or(Error::Eof)?;
+                let slice = data.get(pos..end).ok_or(Error::Eof)?;
+                out.push((field_no, Value::Bytes(slice.to_vec())));
+                pos = end;
+            }
+            1 => pos = pos.checked_add(8).ok_or(Error::Eof)?,
+            5 => pos = pos.checked_add(4).ok_or(Error::Eof)?,
+            other => return Err(Error::UnsupportedWireType(other)),
+        }
+    }
+    Ok(out)
+}
+
+/// Get the first varint field with the given number.
+pub fn first_varint(fields: &[(u64, Value)], field_no: u64) -> Option<u64> {
+    fields.iter().find_map(|(f, v)| match v {
+        Value::Varint(x) if *f == field_no => Some(*x),
+        _ => None,
+    })
+}
+
+/// Get the first length-delimited field with the given number.
+pub fn first_bytes(fields: &[(u64, Value)], field_no: u64) -> Option<&[u8]> {
+    fields.iter().find_map(|(f, v)| match v {
+        Value::Bytes(x) if *f == field_no => Some(x.as_slice()),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

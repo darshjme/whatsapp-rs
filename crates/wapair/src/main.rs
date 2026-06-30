@@ -21,7 +21,7 @@ use tungstenite::{http::Request, Message, WebSocket};
 use waclient::device::DeviceIdentity;
 use wabin::Node;
 use wanoise::frame::{encode_frame, wa_conn_header, FrameReader};
-use wanoise::noise::XxInitiator;
+use wanoise::noise::{NoiseTransport, XxInitiator};
 
 const SESSION_FILE: &str = "wapair-session.json";
 const DEVICE_LABEL: &str = "whatsapp-rs";
@@ -76,8 +76,10 @@ fn run() -> Result<(), String> {
     ws.send(Message::Binary(frame)).map_err(|e| format!("send ClientFinish: {e}"))?;
     println!("[*] sent registration ClientPayload, waiting for pair-device...\n");
 
-    // 4. Read encrypted stanzas until the pair-device IQ arrives.
-    for _ in 0..40 {
+    // 4. Pairing loop: render the QR on pair-device; on pair-success sign the device identity,
+    //    send pair-device-sign, and finish on <success>.
+    let mut shown_hint = false;
+    for _ in 0..200 {
         let frame = read_frame(&mut ws, &mut reader)?;
         let plaintext = transport.decrypt(&frame).map_err(|e| format!("transport decrypt: {e}"))?;
         let unpacked = unpack_stanza(&plaintext)?;
@@ -85,36 +87,119 @@ fn run() -> Result<(), String> {
             let hexs: String = unpacked.iter().map(|b| format!("{b:02x}")).collect();
             eprintln!("    [debug] stanza {}B: {hexs}", unpacked.len());
         }
-
-        match wabin::unmarshal(&unpacked) {
-            Ok(node) => {
-                if let Some(refs) = extract_pair_refs(&node) {
-                    println!("\n[+] got pair-device with {} ref(s) — showing QR\n", refs.len());
-                    show_qr(&refs[0], &device);
-                    println!("\n[*] On your phone: WhatsApp → Settings → Linked devices → Link a device,");
-                    println!("    then scan the QR above. (Refs rotate; re-run if it expires.)");
-                    return Ok(());
-                }
-                if node.tag == "failure" {
-                    let reason = node.get_attr("reason").unwrap_or("?");
-                    let detail = match reason {
-                        "405" => "client out of date — the advertised WhatsApp-web version is too old",
-                        "403" | "401" => "logged out / not authorized",
-                        "402" => "temporarily banned",
-                        "409" => "user agent rejected",
-                        _ => "connection rejected",
-                    };
-                    return Err(format!(
-                        "server <failure reason=\"{reason}\"> ({detail}); location={}",
-                        node.get_attr("location").unwrap_or("?")
-                    ));
-                }
-                println!("    parsed <{}> attrs={:?}", node.tag, node.attrs);
+        let node = match wabin::unmarshal(&unpacked) {
+            Ok(n) => n,
+            Err(e) => {
+                println!("    (unparsable stanza: {e})");
+                continue;
             }
-            Err(e) => println!("    (could not parse this stanza: {e})"),
+        };
+
+        match node.tag.as_str() {
+            "failure" => {
+                let reason = node.get_attr("reason").unwrap_or("?");
+                let detail = match reason {
+                    "405" => "client out of date - advertised WhatsApp version too old",
+                    "403" | "401" => "logged out / not authorized",
+                    "402" => "temporarily banned",
+                    "409" => "user agent rejected",
+                    _ => "connection rejected",
+                };
+                return Err(format!("server <failure reason=\"{reason}\"> ({detail})"));
+            }
+            "success" => {
+                println!("\n*** PAIRED *** this device is now linked to the account.");
+                return Ok(());
+            }
+            "iq" => {
+                let id = node.get_attr("id").unwrap_or("").to_string();
+                let from = node.get_attr("from").unwrap_or("s.whatsapp.net").to_string();
+                if let Some(pd) = node.child_nodes().iter().find(|n| n.tag == "pair-device") {
+                    send_node(&mut ws, &mut transport, &ack_iq(&from, &id))?;
+                    let refs: Vec<String> = pd
+                        .child_nodes()
+                        .iter()
+                        .filter(|n| n.tag == "ref")
+                        .filter_map(|n| n.content_bytes().map(|b| String::from_utf8_lossy(b).into_owned()))
+                        .collect();
+                    if let Some(r) = refs.first() {
+                        println!("\n[+] pair-device ({} ref(s)) - scan this QR:\n", refs.len());
+                        show_qr(r, &device);
+                        if !shown_hint {
+                            println!("\n[*] On your phone: WhatsApp -> Linked devices -> Link a device -> scan.");
+                            println!("    Use a SECONDARY/burner number. The QR refreshes until you scan.");
+                            shown_hint = true;
+                        }
+                    }
+                } else if let Some(ps) = node.child_nodes().iter().find(|n| n.tag == "pair-success") {
+                    println!("\n[+] phone authorized the link - signing device identity...");
+                    let di = ps
+                        .child_nodes()
+                        .iter()
+                        .find(|n| n.tag == "device-identity")
+                        .and_then(|n| n.content_bytes())
+                        .ok_or("pair-success missing <device-identity>")?;
+                    let result = waclient::complete_pair_success(di, &device)
+                        .map_err(|e| format!("pair-success: {e}"))?;
+                    let jid = ps
+                        .child_nodes()
+                        .iter()
+                        .find(|n| n.tag == "device")
+                        .and_then(|n| n.get_attr("jid"))
+                        .unwrap_or("?")
+                        .to_string();
+                    send_node(
+                        &mut ws,
+                        &mut transport,
+                        &pair_device_sign(&id, result.key_index, &result.self_signed_identity),
+                    )?;
+                    println!("[+] sent pair-device-sign; finalizing as {jid} ...");
+                }
+            }
+            other => println!("    (stanza <{other}>)"),
         }
     }
-    Err("did not receive a pair-device IQ".into())
+    Err("pairing did not complete in time".into())
+}
+
+/// Wrap stanza node bytes with the 1-byte uncompressed flag (the inverse of unpack_stanza).
+fn pack_stanza(node_bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + node_bytes.len());
+    out.push(0); // flag: no zlib compression
+    out.extend_from_slice(node_bytes);
+    out
+}
+
+/// Marshal, pack, transport-encrypt and frame a stanza, then send it.
+fn send_node(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    transport: &mut NoiseTransport,
+    node: &Node,
+) -> Result<(), String> {
+    let node_bytes = wabin::marshal(node).map_err(|e| format!("marshal: {e}"))?;
+    let ct = transport
+        .encrypt(&pack_stanza(&node_bytes))
+        .map_err(|e| format!("encrypt: {e}"))?;
+    let mut frame = Vec::new();
+    encode_frame(&ct, &mut frame).map_err(|e| format!("frame: {e}"))?;
+    ws.send(Message::Binary(frame)).map_err(|e| format!("ws send: {e}"))
+}
+
+/// `<iq to=.. id=.. type="result"/>` — the ack for a `pair-device` IQ.
+fn ack_iq(to: &str, id: &str) -> Node {
+    Node::new("iq").attr("to", to).attr("id", id).attr("type", "result")
+}
+
+/// `<iq to="s.whatsapp.net" type="result" id=..><pair-device-sign><device-identity key-index=..>
+/// {self-signed identity}</device-identity></pair-device-sign></iq>`.
+fn pair_device_sign(id: &str, key_index: u32, self_signed: &[u8]) -> Node {
+    Node::new("iq")
+        .attr("to", "s.whatsapp.net")
+        .attr("type", "result")
+        .attr("id", id)
+        .children(vec![Node::new("pair-device-sign").children(vec![Node::new("device-identity")
+            .attr("key-index", key_index.to_string())
+            .bytes(self_signed.to_vec())])])
 }
 
 // --------------------------------------------------------------------------------------------
@@ -186,21 +271,6 @@ fn unpack_stanza(data: &[u8]) -> Result<Vec<u8>, String> {
     } else {
         Ok(body.to_vec())
     }
-}
-
-/// Find a `pair-device` IQ and return its `<ref>` values.
-fn extract_pair_refs(node: &Node) -> Option<Vec<String>> {
-    if node.tag != "iq" {
-        return None;
-    }
-    let pair_device = node.child_nodes().iter().find(|n| n.tag == "pair-device")?;
-    let refs: Vec<String> = pair_device
-        .child_nodes()
-        .iter()
-        .filter(|n| n.tag == "ref")
-        .filter_map(|n| n.content_bytes().map(|b| String::from_utf8_lossy(b).into_owned()))
-        .collect();
-    (!refs.is_empty()).then_some(refs)
 }
 
 fn show_qr(reference: &str, device: &DeviceIdentity) {
