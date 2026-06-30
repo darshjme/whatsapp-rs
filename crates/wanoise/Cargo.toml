@@ -1,0 +1,15 @@
+[package]
+name = "wanoise"
+version = "0.1.0"
+description = "WhatsApp transport: Noise_XX handshake + length-framed stream to the chatd gateway"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["whatsapp", "noise", "protocol", "handshake", "transport"]
+categories = ["network-programming", "cryptography"]
+
+[dependencies]
+thiserror.workspace = true
+snow.workspace = true
