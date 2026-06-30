@@ -67,7 +67,25 @@ foreach ($v in $fresh) {
         Log ("*** GATE OPEN *** version " + $v + " ACCEPTED - pair-device received!")
         ("GATE OPEN with version " + $v + " at " + (Get-Date)) | Out-File (Join-Path $RepoRoot 'GATE-OPEN.txt')
         $out | Out-File (Join-Path $RepoRoot 'gate-open-output.txt')
-        Log "QR output saved to gate-open-output.txt"
+        # Loud, reliable notification: drop an alert on the Desktop with the accepted version + next step.
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $alert = @(
+            "whatsapp-rs: THE VERSION GATE OPENED!",
+            "",
+            ("Accepted WhatsApp version: " + $v),
+            ("Detected: " + (Get-Date)),
+            "",
+            "To pair (scan the QR with your phone), run an interactive session:",
+            ("  cd " + $RepoRoot),
+            ('  $env:WAPAIR_VERSION=' + "'" + $v + "'" + '; $env:WAPAIR_PLATFORM=' + "'14'"),
+            "  cargo run -p wapair",
+            "",
+            "Then on your phone: WhatsApp -> Linked devices -> Link a device -> scan.",
+            "Use a SECONDARY/burner number, not your main one."
+        ) -join "`r`n"
+        $alert | Out-File (Join-Path $desktop 'WHATSAPP-RS-GATE-OPEN.txt')
+        try { msg.exe * ("whatsapp-rs: WhatsApp version gate OPENED (" + $v + ") - see Desktop alert to pair.") 2>$null } catch {}
+        Log ("Desktop alert written; accepted version " + $v)
         Log "=== run end (SUCCESS) ==="
         return
     }
