@@ -1,0 +1,14 @@
+[package]
+name = "waproto"
+version = "0.1.0"
+description = "WhatsApp protobuf wire types (handshake messages and the protobuf primitives they share)"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["whatsapp", "protobuf", "protocol", "handshake"]
+categories = ["encoding"]
+
+[dependencies]
+thiserror.workspace = true
