@@ -8,6 +8,12 @@ Cargo.lock.bak
 /sessions/
 wapair-session.json
 *-session.json
+
+# gate-hunt run artifacts
+gate-hunt.log
+.gate-tried.txt
+GATE-OPEN.txt
+gate-open-output.txt
 *.env
 .env
 
