@@ -1,6 +1,6 @@
 //! Lossless encoder/decoder between [`Node`] trees and the WhatsApp binary node format.
 
-use crate::token::{tag, token_index, token_str};
+use crate::token::{double_byte_token, tag, token_index, token_str};
 use crate::{Error, Node, NodeContent, Result};
 
 // ----------------------------------------------------------------------------------------------
@@ -260,11 +260,12 @@ impl Decoder<'_> {
                 .map(str::to_owned)
                 .ok_or(Error::UnknownToken(t as usize)),
             tag::DICTIONARY_0..=tag::DICTIONARY_3 => {
-                // Double-byte dictionaries: index follows in the next byte. Not yet seeded, so we
-                // consume the index and report it rather than corrupting the stream position.
+                // Double-byte dictionaries: the index follows in the next byte.
                 let idx = self.read_u8()? as usize;
                 let dict = (t - tag::DICTIONARY_0) as usize;
-                Err(Error::UnknownToken(dict * 256 + idx))
+                double_byte_token(dict, idx)
+                    .map(str::to_owned)
+                    .ok_or(Error::UnknownToken(dict * 256 + idx))
             }
             tag::AD_JID => self.read_ad_jid(),
             tag::JID_PAIR => self.read_jid_pair(),
@@ -423,14 +424,14 @@ mod tests {
 
     #[test]
     fn tokens_are_compressed() {
-        // "message"=11, "to"=14, "type"=4, "id"=8 are dictionary tokens; "s.whatsapp.net"=3.
+        // In the full canonical dictionary "message"=19, "type"=4, "id"=8, "s.whatsapp.net"=3.
         let node = Node::new("message")
             .attr("to", "1@s.whatsapp.net")
             .attr("type", "text");
         let bytes = marshal(&node).unwrap();
-        // list8 tag + size, then the description token must be the single byte 11.
+        // list8 tag + size, then the description token must be the single byte 19.
         assert_eq!(bytes[0], tag::LIST_8);
-        assert_eq!(bytes[2], 11, "description should encode as token 11 (message)");
+        assert_eq!(bytes[2], 19, "description should encode as token 19 (message)");
         assert_eq!(round_trip(&node), node);
     }
 

@@ -81,16 +81,32 @@ fn run() -> Result<(), String> {
         let frame = read_frame(&mut ws, &mut reader)?;
         let plaintext = transport.decrypt(&frame).map_err(|e| format!("transport decrypt: {e}"))?;
         let unpacked = unpack_stanza(&plaintext)?;
-        let node = wabin::unmarshal(&unpacked).map_err(|e| format!("parse stanza: {e}"))?;
-
-        if let Some(refs) = extract_pair_refs(&node) {
-            println!("[+] got pair-device with {} ref(s) — showing QR\n", refs.len());
-            show_qr(&refs[0], &device);
-            println!("\n[*] On your phone: WhatsApp → Settings → Linked devices → Link a device,");
-            println!("    then scan the QR above. (Refs rotate; re-run if it expires.)");
-            return Ok(());
+        if std::env::var("WAPAIR_DEBUG").is_ok() {
+            let hexs: String = unpacked.iter().map(|b| format!("{b:02x}")).collect();
+            eprintln!("    [debug] stanza {}B: {hexs}", unpacked.len());
         }
-        println!("    (received <{}> stanza, still waiting for pair-device)", node.tag);
+
+        match wabin::unmarshal(&unpacked) {
+            Ok(node) => {
+                if let Some(refs) = extract_pair_refs(&node) {
+                    println!("\n[+] got pair-device with {} ref(s) — showing QR\n", refs.len());
+                    show_qr(&refs[0], &device);
+                    println!("\n[*] On your phone: WhatsApp → Settings → Linked devices → Link a device,");
+                    println!("    then scan the QR above. (Refs rotate; re-run if it expires.)");
+                    return Ok(());
+                }
+                // The entry server typically redirects to an edge location before pairing.
+                if let Some(reason) = node.get_attr("reason") {
+                    let location = node.get_attr("location").unwrap_or("?");
+                    return Err(format!(
+                        "server sent an edge-routing redirect (reason={reason}, location={location}); \
+                         reconnect-with-routing not implemented yet"
+                    ));
+                }
+                println!("    parsed stanza attrs={:?}", node.attrs);
+            }
+            Err(e) => println!("    (could not parse this stanza: {e})"),
+        }
     }
     Err("did not receive a pair-device IQ".into())
 }
