@@ -1,0 +1,14 @@
+[package]
+name = "wademo"
+version = "0.1.0"
+description = "Runnable demo: the wabin/wanoise pipeline, plus a live Noise handshake against WhatsApp's chatd servers"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+wabin = { path = "../wabin" }
+wanoise = { path = "../wanoise" }
+tungstenite = { version = "0.21", features = ["native-tls"] }
