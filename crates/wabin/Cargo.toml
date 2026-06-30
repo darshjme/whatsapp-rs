@@ -1,0 +1,14 @@
+[package]
+name = "wabin"
+version = "0.1.0"
+description = "WhatsApp binary XMPP node codec (the wire format used by the WhatsApp multi-device protocol)"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["whatsapp", "protocol", "xmpp", "codec", "multidevice"]
+categories = ["encoding", "parser-implementations"]
+
+[dependencies]
+thiserror.workspace = true

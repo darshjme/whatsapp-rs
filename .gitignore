@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Secrets / session state — never commit a paired session or keys
+*.session
+*.keys
+/sessions/
+*.env
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
