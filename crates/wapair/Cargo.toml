@@ -17,3 +17,4 @@ tungstenite = { version = "0.21", features = ["native-tls"] }
 qr2term = "0.3"
 md-5 = "0.10"
 flate2 = "1"
+getrandom = "0.2"

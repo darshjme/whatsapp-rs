@@ -15,9 +15,11 @@
 
 pub mod device;
 pub mod pairing;
+pub mod phone;
 
 pub use device::{DeviceIdentity, KeyPair, SignedPreKey};
 pub use pairing::{complete_pair_success, qr_payload, PairSuccess, RefQueue};
+pub use phone::{begin_phone_pairing, finish_phone_pairing, PhoneLinking};
 
 /// Errors from the client layer.
 #[derive(Debug, thiserror::Error)]

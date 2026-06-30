@@ -649,6 +649,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+ "hmac",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1155,6 +1165,7 @@ name = "wapair"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "getrandom 0.2.17",
  "md-5",
  "qr2term",
  "tungstenite",
@@ -1181,9 +1192,14 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 name = "wasignal"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
+ "ctr",
  "curve25519-dalek",
  "getrandom 0.2.17",
+ "hkdf",
  "hmac",
+ "pbkdf2",
  "sha2",
 ]
 

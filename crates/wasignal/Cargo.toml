@@ -14,4 +14,9 @@ categories = ["cryptography"]
 curve25519-dalek = "4"
 sha2 = "0.10"
 hmac = "0.12"
+hkdf = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+aes = "0.8"
+ctr = "0.9"
+aes-gcm = "0.10"
 getrandom = "0.2"

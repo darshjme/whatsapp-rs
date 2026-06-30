@@ -8,8 +8,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod pcrypto;
 pub mod xeddsa;
 
+pub use pcrypto::{aes256_ctr, aes256_gcm_open, aes256_gcm_seal, hkdf_sha256, pbkdf2_sha256};
 pub use xeddsa::{sign, verify};
 
 use hmac::{Hmac, Mac};

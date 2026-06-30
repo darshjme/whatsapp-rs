@@ -36,7 +36,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     // 1. Device identity (persisted so the session is stable across runs).
-    let device = load_or_create_device()?;
+    let mut device = load_or_create_device()?;
     println!("[*] device identity ready (registration id {})", device.registration_id);
     println!("    noise pub    : {}", b64(&device.noise_key.public));
     println!("    identity pub : {}", b64(&device.identity_key.public));
@@ -74,7 +74,28 @@ fn run() -> Result<(), String> {
     let mut frame = Vec::new();
     encode_frame(&client_finish, &mut frame).map_err(|e| e.to_string())?;
     ws.send(Message::Binary(frame)).map_err(|e| format!("send ClientFinish: {e}"))?;
-    println!("[*] sent registration ClientPayload, waiting for pair-device...\n");
+    println!("[*] sent registration ClientPayload\n");
+
+    // 3b. Phone-number (pairing-code) mode: if WAPAIR_PHONE is set, send companion_hello and show
+    //     the code; otherwise we wait for the QR pair-device IQ.
+    let phone_jid = std::env::var("WAPAIR_PHONE").ok().map(|p| {
+        let digits: String = p.chars().filter(|c| c.is_ascii_digit()).collect();
+        format!("{digits}@s.whatsapp.net")
+    });
+    let mut linking: Option<waclient::PhoneLinking> = None;
+    if let Some(jid) = &phone_jid {
+        let (state, hello_children, code) =
+            waclient::begin_phone_pairing(&device, "1", "Chrome (Windows)");
+        let hello = link_code_iq(&random_id(), jid, "companion_hello", true, hello_children);
+        send_node(&mut ws, &mut transport, &hello)?;
+        linking = Some(state);
+        println!("[+] PHONE PAIRING — on your phone: Linked devices -> Link with phone number,");
+        println!("    then enter this code:\n");
+        println!("        {code}\n");
+        println!("    (Use a SECONDARY/burner number.)\n");
+    } else {
+        println!("[*] waiting for pair-device...\n");
+    }
 
     // 4. Pairing loop: render the QR on pair-device; on pair-success sign the device identity,
     //    send pair-device-sign, and finish on <success>.
@@ -116,6 +137,9 @@ fn run() -> Result<(), String> {
                 let from = node.get_attr("from").unwrap_or("s.whatsapp.net").to_string();
                 if let Some(pd) = node.child_nodes().iter().find(|n| n.tag == "pair-device") {
                     send_node(&mut ws, &mut transport, &ack_iq(&from, &id))?;
+                    if phone_jid.is_some() {
+                        continue; // phone-code mode: ignore the QR refs
+                    }
                     let refs: Vec<String> = pd
                         .child_nodes()
                         .iter()
@@ -154,12 +178,76 @@ fn run() -> Result<(), String> {
                         &pair_device_sign(&id, result.key_index, &result.self_signed_identity),
                     )?;
                     println!("[+] sent pair-device-sign; finalizing as {jid} ...");
+                } else if let Some(lc) =
+                    node.child_nodes().iter().find(|n| n.tag == "link_code_companion_reg")
+                {
+                    // Response to companion_hello: capture the pairing ref for phase 2.
+                    if let (Some(state), Some(ref_bytes)) = (
+                        linking.as_mut(),
+                        lc.child_nodes()
+                            .iter()
+                            .find(|n| n.tag == "link_code_pairing_ref")
+                            .and_then(|n| n.content_bytes()),
+                    ) {
+                        state.pairing_ref = Some(String::from_utf8_lossy(ref_bytes).into_owned());
+                        println!("[+] companion_hello accepted; waiting for you to enter the code...");
+                    }
+                }
+            }
+            "notification" => {
+                // Phone-code phase 2: the phone entered the code; derive adv secret + finish.
+                if let (Some(lc), Some(state)) = (
+                    node.child_nodes().iter().find(|n| n.tag == "link_code_companion_reg"),
+                    linking.as_ref(),
+                ) {
+                    let wrapped = lc
+                        .child_nodes()
+                        .iter()
+                        .find(|n| n.tag == "link_code_pairing_wrapped_primary_ephemeral_pub")
+                        .and_then(|n| n.content_bytes());
+                    let primary_id = lc
+                        .child_nodes()
+                        .iter()
+                        .find(|n| n.tag == "primary_identity_pub")
+                        .and_then(|n| n.content_bytes());
+                    if let (Some(w), Some(pid)) = (wrapped, primary_id) {
+                        let (adv, finish_children) = waclient::finish_phone_pairing(&device, state, w, pid)
+                            .map_err(|e| format!("phone finish: {e}"))?;
+                        device.adv_secret = adv;
+                        let jid = phone_jid.clone().unwrap_or_default();
+                        let finish = link_code_iq(&random_id(), &jid, "companion_finish", false, finish_children);
+                        send_node(&mut ws, &mut transport, &finish)?;
+                        println!("[+] code accepted; finalizing pairing...");
+                    }
                 }
             }
             other => println!("    (stanza <{other}>)"),
         }
     }
     Err("pairing did not complete in time".into())
+}
+
+/// A random hex IQ id.
+fn random_id() -> String {
+    let mut b = [0u8; 8];
+    getrandom::getrandom(&mut b).expect("system RNG");
+    b.iter().map(|x| format!("{x:02X}")).collect()
+}
+
+/// `<iq to="s.whatsapp.net" type="set" xmlns="md" id=..><link_code_companion_reg jid=.. stage=..>
+/// {children}</link_code_companion_reg></iq>`.
+fn link_code_iq(id: &str, jid: &str, stage: &str, show_push: bool, children: Vec<Node>) -> Node {
+    let mut reg = Node::new("link_code_companion_reg").attr("jid", jid).attr("stage", stage);
+    if show_push {
+        reg = reg.attr("should_show_push_notification", "true");
+    }
+    let reg = reg.children(children);
+    Node::new("iq")
+        .attr("to", "s.whatsapp.net")
+        .attr("type", "set")
+        .attr("xmlns", "md")
+        .attr("id", id)
+        .children(vec![reg])
 }
 
 /// Wrap stanza node bytes with the 1-byte uncompressed flag (the inverse of unpack_stanza).
