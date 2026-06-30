@@ -6,6 +6,8 @@ Cargo.lock.bak
 *.session
 *.keys
 /sessions/
+wapair-session.json
+*-session.json
 *.env
 .env
 
