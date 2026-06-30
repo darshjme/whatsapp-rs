@@ -11,4 +11,5 @@ publish = false
 [dependencies]
 wabin = { path = "../wabin" }
 wanoise = { path = "../wanoise" }
+waproto = { path = "../waproto" }
 tungstenite = { version = "0.21", features = ["native-tls"] }

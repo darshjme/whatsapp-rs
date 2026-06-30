@@ -117,19 +117,41 @@ fn part2_live_handshake() {
 }
 
 fn try_live_handshake() -> Result<Vec<u8>, String> {
+    // The on-wire header is always WA 06 03 (this is what the server's dictionary-version check
+    // accepts). The Noise *prologue* is logically separate; the reference says it equals the header,
+    // but a msg2 decrypt failure is the classic prologue-mismatch signature, so we try both and let
+    // the live server tell us which is right.
+    let wire_header = wa_conn_header();
+    let candidates: [(&str, Vec<u8>); 2] = [
+        ("prologue = WAConnHeader", wire_header.to_vec()),
+        ("prologue = empty", Vec::new()),
+    ];
+
+    let mut last_err = String::new();
+    for (label, prologue) in candidates {
+        match attempt_handshake(&wire_header, &prologue) {
+            Ok(server_static) => {
+                println!("    ✓ Noise msg2 decrypted with {label}");
+                return Ok(server_static);
+            }
+            Err(e) => {
+                println!("    · {label}: {e}");
+                last_err = e;
+            }
+        }
+    }
+    Err(last_err)
+}
+
+/// One full attempt over a fresh WebSocket: send ClientHello, read ServerHello, decrypt msg2.
+fn attempt_handshake(wire_header: &[u8], noise_prologue: &[u8]) -> Result<Vec<u8>, String> {
     use tungstenite::http::Request;
     use tungstenite::Message;
 
-    // WhatsApp multi-device web gateway. Origin header is required.
     let request = Request::builder()
         .uri("wss://web.whatsapp.com/ws/chat")
         .header("Host", "web.whatsapp.com")
         .header("Origin", "https://web.whatsapp.com")
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        )
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
@@ -138,48 +160,39 @@ fn try_live_handshake() -> Result<Vec<u8>, String> {
         .map_err(|e| format!("build request: {e}"))?;
 
     let (mut ws, _resp) = tungstenite::connect(request).map_err(|e| format!("ws connect: {e}"))?;
-    println!("    ... WebSocket connected to web.whatsapp.com");
 
-    // Build the Noise initiator and produce the ephemeral (raw msg1 == 32-byte X25519 pubkey).
     let id = generate_keypair().map_err(|e| format!("keygen: {e}"))?;
-    let prologue = wa_conn_header();
-    let mut hs = Handshake::new_initiator(&id.private, &prologue).map_err(|e| format!("hs: {e}"))?;
+    let mut hs =
+        Handshake::new_initiator(&id.private, noise_prologue).map_err(|e| format!("hs: {e}"))?;
     let ephemeral = hs.write_message(&[]).map_err(|e| format!("msg1: {e}"))?;
 
-    // Wrap it as HandshakeMessage{ clientHello { ephemeral } } (protobuf, hand-encoded).
-    let client_hello = encode_client_hello(&ephemeral);
-
-    // First wire bytes = WA connection header, then the length-framed ClientHello.
-    let mut out = prologue.to_vec();
+    // First wire bytes = WA header, then the length-framed typed ClientHello — one binary message.
+    let client_hello = waproto::ClientHello::with_ephemeral(ephemeral).encode();
+    let mut out = wire_header.to_vec();
     encode_frame(&client_hello, &mut out).map_err(|e| format!("frame: {e}"))?;
     ws.send(Message::Binary(out)).map_err(|e| format!("ws send: {e}"))?;
-    println!("    ... sent WA header + ClientHello ({} ephemeral bytes)", ephemeral.len());
 
-    // Read until we get a binary frame carrying the ServerHello.
     let mut reader = FrameReader::new();
     for _ in 0..8 {
-        let msg = ws.read().map_err(|e| format!("ws read: {e}"))?;
-        match msg {
+        match ws.read().map_err(|e| format!("ws read: {e}"))? {
             Message::Binary(data) => {
                 reader.push(&data);
                 if let Some(frame) = reader.next_frame() {
-                    let (eph, stat, payload) = parse_server_hello(&frame)?;
+                    let server_hello = waproto::HandshakeMessage::decode(&frame)
+                        .map_err(|e| format!("decode: {e}"))?
+                        .into_server_hello()
+                        .map_err(|e| format!("expected ServerHello: {e}"))?;
                     println!(
-                        "    ... got ServerHello (ephemeral {}B, static {}B, payload {}B)",
-                        eph.len(),
-                        stat.len(),
-                        payload.len()
+                        "      (server replied: ServerHello ephemeral {}B / static {}B / cert {}B)",
+                        server_hello.ephemeral.len(),
+                        server_hello.static_key.len(),
+                        server_hello.payload.len()
                     );
-                    // Reconstruct the raw Noise msg2 = ephemeral || static || payload.
-                    let mut raw = Vec::with_capacity(eph.len() + stat.len() + payload.len());
-                    raw.extend_from_slice(&eph);
-                    raw.extend_from_slice(&stat);
-                    raw.extend_from_slice(&payload);
-                    hs.read_message(&raw).map_err(|e| format!("noise read msg2: {e}"))?;
-                    let server_static = hs
+                    hs.read_message(&server_hello.noise_message())
+                        .map_err(|e| format!("noise read msg2: {e}"))?;
+                    return hs
                         .remote_static()
-                        .ok_or_else(|| "server static key missing".to_string())?;
-                    return Ok(server_static);
+                        .ok_or_else(|| "server static key missing".to_string());
                 }
             }
             Message::Close(c) => return Err(format!("server closed: {c:?}")),
@@ -189,112 +202,3 @@ fn try_live_handshake() -> Result<Vec<u8>, String> {
     Err("no ServerHello frame received".into())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Minimal protobuf for the Noise HandshakeMessage (avoids a full proto dep for the demo)
-//   HandshakeMessage { ClientHello clientHello = 2; ServerHello serverHello = 3; }
-//   ClientHello / ServerHello { bytes ephemeral = 1; bytes static = 2; bytes payload = 3; }
-// ---------------------------------------------------------------------------------------------
-
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    loop {
-        let mut b = (v & 0x7f) as u8;
-        v >>= 7;
-        if v != 0 {
-            b |= 0x80;
-        }
-        out.push(b);
-        if v == 0 {
-            break;
-        }
-    }
-}
-
-/// A length-delimited field: `(field_no << 3 | 2)`, varint length, then bytes.
-fn put_len_field(out: &mut Vec<u8>, field_no: u64, data: &[u8]) {
-    put_varint(out, (field_no << 3) | 2);
-    put_varint(out, data.len() as u64);
-    out.extend_from_slice(data);
-}
-
-fn encode_client_hello(ephemeral: &[u8]) -> Vec<u8> {
-    let mut inner = Vec::new();
-    put_len_field(&mut inner, 1, ephemeral); // ClientHello.ephemeral = 1
-    let mut msg = Vec::new();
-    put_len_field(&mut msg, 2, &inner); // HandshakeMessage.clientHello = 2
-    msg
-}
-
-fn read_varint(data: &[u8], pos: &mut usize) -> Result<u64, String> {
-    let mut shift = 0;
-    let mut val = 0u64;
-    loop {
-        let b = *data.get(*pos).ok_or("varint eof")?;
-        *pos += 1;
-        val |= ((b & 0x7f) as u64) << shift;
-        if b & 0x80 == 0 {
-            return Ok(val);
-        }
-        shift += 7;
-        if shift >= 64 {
-            return Err("varint too long".into());
-        }
-    }
-}
-
-/// A decoded protobuf length-delimited field: its number and raw bytes.
-type Field = (u64, Vec<u8>);
-/// The three byte-strings recovered from a `ServerHello`: ephemeral, static, payload.
-type ServerHelloParts = (Vec<u8>, Vec<u8>, Vec<u8>);
-
-/// Walk length-delimited fields, returning `(field_no, bytes)` for each.
-fn iter_fields(data: &[u8]) -> Result<Vec<Field>, String> {
-    let mut out = Vec::new();
-    let mut pos = 0;
-    while pos < data.len() {
-        let key = read_varint(data, &mut pos)?;
-        let field_no = key >> 3;
-        let wire = key & 7;
-        match wire {
-            2 => {
-                let len = read_varint(data, &mut pos)? as usize;
-                let end = pos.checked_add(len).ok_or("len overflow")?;
-                let slice = data.get(pos..end).ok_or("field eof")?;
-                out.push((field_no, slice.to_vec()));
-                pos = end;
-            }
-            0 => {
-                read_varint(data, &mut pos)?; // skip varint field
-            }
-            5 => pos += 4,
-            1 => pos += 8,
-            _ => return Err(format!("unsupported wire type {wire}")),
-        }
-    }
-    Ok(out)
-}
-
-/// Parse HandshakeMessage -> ServerHello, returning (ephemeral, static, payload).
-fn parse_server_hello(frame: &[u8]) -> Result<ServerHelloParts, String> {
-    let top = iter_fields(frame)?;
-    let server_hello = top
-        .into_iter()
-        .find(|(f, _)| *f == 3) // HandshakeMessage.serverHello = 3
-        .map(|(_, b)| b)
-        .ok_or("no serverHello field in HandshakeMessage")?;
-    let fields = iter_fields(&server_hello)?;
-    let mut eph = Vec::new();
-    let mut stat = Vec::new();
-    let mut payload = Vec::new();
-    for (f, b) in fields {
-        match f {
-            1 => eph = b,
-            2 => stat = b,
-            3 => payload = b,
-            _ => {}
-        }
-    }
-    if eph.is_empty() || stat.is_empty() {
-        return Err("ServerHello missing ephemeral/static".into());
-    }
-    Ok((eph, stat, payload))
-}

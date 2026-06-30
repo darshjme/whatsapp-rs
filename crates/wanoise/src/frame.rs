@@ -14,10 +14,12 @@ pub const MAX_FRAME_LEN: usize = (1 << 24) - 1;
 
 /// WhatsApp magic bytes that open the stream.
 pub const WA_MAGIC: [u8; 2] = *b"WA";
-/// Protocol "edition" byte sent in the connection header.
+/// Protocol "magic"/edition byte sent in the connection header (whatsmeow `WAMagicValue`). Stable.
 pub const EDITION: u8 = 6;
-/// Binary-dictionary version byte sent in the connection header.
-pub const DICT_VERSION: u8 = 5;
+/// Binary-dictionary version byte sent in the connection header. This tracks WhatsApp's current
+/// token dictionary and bumps on dictionary updates (has been 2, currently **3**); the server drops
+/// the connection if it doesn't recognize the value.
+pub const DICT_VERSION: u8 = 3;
 
 /// The connection header sent as the first bytes of the stream, and used as the Noise *prologue*
 /// so the handshake transcript is bound to it. `[ 'W', 'A', EDITION, DICT_VERSION ]`.
