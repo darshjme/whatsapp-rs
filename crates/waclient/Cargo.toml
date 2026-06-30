@@ -1,0 +1,21 @@
+[package]
+name = "waclient"
+version = "0.1.0"
+description = "WhatsApp multi-device client: device identity keystore, QR companion pairing, session"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["whatsapp", "multidevice", "pairing", "client", "qr"]
+categories = ["network-programming"]
+
+[dependencies]
+wabin = { path = "../wabin" }
+wanoise = { path = "../wanoise" }
+waproto = { path = "../waproto" }
+thiserror.workspace = true
+getrandom = "0.2"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -4,6 +4,7 @@ members = [
     "crates/wabin",
     "crates/wanoise",
     "crates/waproto",
+    "crates/waclient",
     "crates/wademo",
 ]
 
