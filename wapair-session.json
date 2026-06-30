@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "noise_private": "odh89Sc9RBN+Rf59DGIMesfospAn9O1TzdzCY2/zc0w=",
+  "noise_public": "pjQPFriDcmCK2u7gl/508FQgxfYvbCsziBL3MrnxtEs=",
+  "identity_private": "qkDTJwdLlPf6TUmZtD3qr6DBi9uH9woST4tkTN80UYQ=",
+  "identity_public": "jgK9/ERluO3zT1LURuEzc4anP6i+reCnOwJYiKp+2Qc=",
+  "signed_pre_key_id": 1,
+  "signed_pre_key_private": "S/i55fmfnfEfW9yRRZwXjDXgXH/E2GrntyH7IY7tX5A=",
+  "signed_pre_key_public": "8ICH766aiFpRZK6I3rfykSrmiOIWQSuQf4dOCPUaHyI=",
+  "signed_pre_key_signature": "3LbhjgqM/mF25gsidqvQguGXnjZc/m+MoZvMYIj/XRzCwHblPkoBJ+oQdAiaDmTAqsg4xOz4ORBKNL8R2fq4BA==",
+  "registration_id": 2784,
+  "adv_secret": "26HkOoicTa5F7gK9Yz+MYG8o4bwTDFEShW8Rs/D4ZMM="
+}

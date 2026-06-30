@@ -65,17 +65,28 @@ fn generate_registration_id() -> u32 {
     (r % 16380) + 1
 }
 
+/// Sign a pre-key public with the identity key: XEdDSA over `0x05 || prekey_public` (64-byte sig).
+fn sign_pre_key(identity: &KeyPair, pre_key_public: &[u8; 32]) -> Vec<u8> {
+    let mut to_sign = Vec::with_capacity(33);
+    to_sign.push(0x05);
+    to_sign.extend_from_slice(pre_key_public);
+    wasignal::sign(&identity.private, &to_sign).to_vec()
+}
+
 impl DeviceIdentity {
-    /// Generate a brand-new device identity (all keys fresh). The signed pre-key signature is filled
-    /// by [`sign_pre_key`](Self::sign_pre_key) once the signing scheme is wired in.
+    /// Generate a brand-new device identity (all keys fresh, signed pre-key signed by the identity
+    /// key via XEdDSA over `0x05 || prekey_public`).
     pub fn generate() -> Self {
+        let identity_key = KeyPair::generate();
+        let pre_key = KeyPair::generate();
+        let signature = sign_pre_key(&identity_key, &pre_key.public);
         DeviceIdentity {
             noise_key: KeyPair::generate(),
-            identity_key: KeyPair::generate(),
+            identity_key,
             signed_pre_key: SignedPreKey {
                 key_id: 1,
-                key_pair: KeyPair::generate(),
-                signature: Vec::new(),
+                key_pair: pre_key,
+                signature,
             },
             registration_id: generate_registration_id(),
             adv_secret: random_bytes::<32>(),
@@ -182,6 +193,12 @@ mod tests {
         assert!((1..=16380).contains(&d.registration_id));
         // distinct keys
         assert_ne!(d.noise_key.private, d.identity_key.private);
+        // the signed pre-key carries a valid 64-byte XEdDSA signature by the identity key
+        assert!(d.is_pre_key_signed());
+        let mut signed = vec![0x05u8];
+        signed.extend_from_slice(&d.signed_pre_key.key_pair.public);
+        let sig: [u8; 64] = d.signed_pre_key.signature.clone().try_into().unwrap();
+        assert!(wasignal::verify(&d.identity_key.public, &signed, &sig));
     }
 
     #[test]

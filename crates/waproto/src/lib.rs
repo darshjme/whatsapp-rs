@@ -10,9 +10,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod client_payload;
 pub mod handshake;
 pub mod pb;
 
+pub use client_payload::RegistrationPayload;
 pub use handshake::{ClientFinish, ClientHello, HandshakeMessage, ServerHello};
 
 /// Errors from protobuf decoding.

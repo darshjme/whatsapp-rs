@@ -3,9 +3,11 @@ resolver = "2"
 members = [
     "crates/wabin",
     "crates/wanoise",
+    "crates/wasignal",
     "crates/waproto",
     "crates/waclient",
     "crates/wademo",
+    "crates/wapair",
 ]
 
 [workspace.package]

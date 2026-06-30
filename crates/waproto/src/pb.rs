@@ -37,6 +37,12 @@ pub fn put_len_field(out: &mut Vec<u8>, field_no: u64, data: &[u8]) {
     out.extend_from_slice(data);
 }
 
+/// Append a varint (wire type 0) field: tag, value. Use for bool/enum/int fields.
+pub fn put_varint_field(out: &mut Vec<u8>, field_no: u64, value: u64) {
+    put_varint(out, (field_no << 3) | wire::VARINT);
+    put_varint(out, value);
+}
+
 /// Read a base-128 varint, advancing `pos`.
 pub fn read_varint(data: &[u8], pos: &mut usize) -> Result<u64, Error> {
     let mut shift = 0u32;

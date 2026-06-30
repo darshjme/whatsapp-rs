@@ -206,6 +206,31 @@ impl XxInitiator {
         self.server_ephemeral = Some(server_eph);
         Ok((server_static, payload))
     }
+
+    /// Complete the handshake (Noise `-> s, se`): encrypt our static (noise) public key, mix `se`,
+    /// encrypt the `ClientPayload`, and split into the post-handshake [`NoiseTransport`]. Returns the
+    /// `(encrypted_static, encrypted_payload)` to place in a `ClientFinish`, plus the transport.
+    ///
+    /// Must be called after [`read_server_hello`](Self::read_server_hello).
+    pub fn finish(
+        &mut self,
+        static_private: &[u8; 32],
+        static_public: &[u8; 32],
+        client_payload: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>, NoiseTransport), Error> {
+        let server_eph = self
+            .server_ephemeral
+            .ok_or(Error::Crypto("server hello not read yet"))?;
+        let encrypted_static = self.state.encrypt(static_public)?;
+        self.state.mix_dh(static_private, &server_eph); // se
+        let encrypted_payload = self.state.encrypt(client_payload)?;
+        let (send, recv) = self.state.split();
+        Ok((
+            encrypted_static,
+            encrypted_payload,
+            NoiseTransport::new(send, recv),
+        ))
+    }
 }
 
 /// An established post-handshake channel: AES-256-GCM with independent send/recv nonce counters and
@@ -352,5 +377,43 @@ mod tests {
             .unwrap();
         assert_eq!(server_static, r_s_pub);
         assert_eq!(payload, b"cert");
+    }
+
+    #[test]
+    fn xx_initiator_finish_produces_working_transport() {
+        let prologue = [b'W', b'A', 6, 3];
+        let (r_s_priv, r_s_pub) = keypair();
+        let (c_s_priv, c_s_pub) = keypair(); // client noise static identity
+
+        let mut i = XxInitiator::new(&prologue);
+        let i_e = i.ephemeral();
+
+        // Responder through ServerHello.
+        let mut r = NoiseState::new(&prologue);
+        r.mix_hash(&i_e);
+        let (r_e_priv, r_e_pub) = keypair();
+        r.mix_hash(&r_e_pub);
+        r.mix_dh(&r_e_priv, &i_e);
+        let enc_static = r.encrypt(&r_s_pub).unwrap();
+        r.mix_dh(&r_s_priv, &i_e);
+        let enc_payload = r.encrypt(b"cert").unwrap();
+        i.read_server_hello(&r_e_pub, &enc_static, &enc_payload).unwrap();
+
+        // Client msg3.
+        let (c_enc_static, c_enc_payload, mut client_tp) =
+            i.finish(&c_s_priv, &c_s_pub, b"<ClientPayload>").unwrap();
+
+        // Responder processes msg3.
+        let got = r.decrypt(&c_enc_static).unwrap();
+        assert_eq!(got, c_s_pub, "server recovers client static");
+        let cs: [u8; 32] = got.try_into().unwrap();
+        r.mix_dh(&r_e_priv, &cs); // se
+        assert_eq!(r.decrypt(&c_enc_payload).unwrap(), b"<ClientPayload>");
+
+        // Transports must agree.
+        let (rs_out1, rs_out2) = r.split();
+        let mut server_tp = NoiseTransport::new(rs_out2, rs_out1);
+        let ct = client_tp.encrypt(b"first stanza").unwrap();
+        assert_eq!(server_tp.decrypt(&ct).unwrap(), b"first stanza");
     }
 }

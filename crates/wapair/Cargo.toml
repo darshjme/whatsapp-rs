@@ -1,0 +1,19 @@
+[package]
+name = "wapair"
+version = "0.1.0"
+description = "Link a WhatsApp companion device: run the registration handshake and render the pairing QR"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+waclient = { path = "../waclient" }
+wanoise = { path = "../wanoise" }
+wabin = { path = "../wabin" }
+waproto = { path = "../waproto" }
+tungstenite = { version = "0.21", features = ["native-tls"] }
+qr2term = "0.3"
+md-5 = "0.10"
+flate2 = "1"
