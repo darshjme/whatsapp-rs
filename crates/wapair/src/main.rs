@@ -134,9 +134,21 @@ fn load_or_create_device() -> Result<DeviceIdentity, String> {
 }
 
 fn build_registration_payload(device: &DeviceIdentity) -> Vec<u8> {
-    let (p, s, t) = waproto::client_payload::WA_VERSION;
+    // Version + platform are overridable for fast iteration once we know the current accepted value:
+    //   WAPAIR_VERSION=2.3000.1234567890  WAPAIR_PLATFORM=14  cargo run -p wapair
+    let app_version = std::env::var("WAPAIR_VERSION")
+        .ok()
+        .and_then(|s| parse_version(&s))
+        .unwrap_or(waproto::client_payload::WA_VERSION);
+    let platform = std::env::var("WAPAIR_PLATFORM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(waproto::client_payload::WA_PLATFORM);
+
+    let (p, s, t) = app_version;
     let version = format!("{p}.{s}.{t}");
     let build_hash: [u8; 16] = Md5::digest(version.as_bytes()).into();
+    println!("[*] advertising version {version}, platform {platform}");
     waproto::RegistrationPayload {
         registration_id: device.registration_id,
         signed_pre_key_id: device.signed_pre_key.key_id,
@@ -145,8 +157,19 @@ fn build_registration_payload(device: &DeviceIdentity) -> Vec<u8> {
         signed_pre_key_signature: device.signed_pre_key.signature.clone(),
         build_hash,
         device_os: DEVICE_LABEL.to_string(),
+        app_version,
+        platform,
     }
     .encode()
+}
+
+/// Parse "2.3000.1041871181" into a version tuple.
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let p: Vec<u64> = s.split('.').filter_map(|x| x.parse().ok()).collect();
+    match p.as_slice() {
+        [a, b, c, ..] => Some((*a, *b, *c)),
+        _ => None,
+    }
 }
 
 /// Strip the WhatsApp stanza framing: a 1-byte flag; if bit 1 (`& 2`) is set, the remainder is

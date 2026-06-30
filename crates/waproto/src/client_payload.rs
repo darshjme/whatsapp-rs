@@ -22,9 +22,14 @@
 
 use crate::pb::{put_len_field, put_varint_field};
 
-/// The WhatsApp Web version advertised in `userAgent.appVersion`. **Must** match the version whose
-/// MD5 is supplied as `build_hash` (see whatsmeow `waVersion`).
+/// Default WhatsApp-web version advertised in `userAgent.appVersion` (the canonical companion path).
+/// NOTE: this is whatsmeow-main's pinned value and is currently stale — the live server rejects it
+/// with `<failure reason="405">` (client out of date). Override at runtime with a current value via
+/// `WAPAIR_VERSION` until a fresh default is wired in. Must match `build_hash` (MD5 of "p.s.t").
 pub const WA_VERSION: (u64, u64, u64) = (2, 3000, 1_041_871_181);
+
+/// Default UserAgent platform enum value. WEB=14, WINDOWS=13. Override via `WAPAIR_PLATFORM`.
+pub const WA_PLATFORM: u64 = 14;
 
 /// Inputs needed to build a registration `ClientPayload` from a device identity.
 pub struct RegistrationPayload {
@@ -34,10 +39,14 @@ pub struct RegistrationPayload {
     pub signed_pre_key_public: [u8; 32],
     /// 64-byte XEdDSA signature over `0x05 || signed_pre_key_public`.
     pub signed_pre_key_signature: Vec<u8>,
-    /// MD5 of the WA version string (16 bytes), e.g. `MD5("2.3000.1041871181")`.
+    /// MD5 of the version string (16 bytes), e.g. `MD5("2.3000.1041871181")`.
     pub build_hash: [u8; 16],
     /// The device label shown in the phone's linked-devices list (DeviceProps.os).
     pub device_os: String,
+    /// `userAgent.appVersion` = (primary, secondary, tertiary). Must match `build_hash`.
+    pub app_version: (u64, u64, u64),
+    /// `userAgent.platform` enum (WEB=14, WINDOWS=13, …).
+    pub platform: u64,
 }
 
 fn app_version(p: u64, s: u64, t: u64) -> Vec<u8> {
@@ -48,10 +57,10 @@ fn app_version(p: u64, s: u64, t: u64) -> Vec<u8> {
     b
 }
 
-fn user_agent() -> Vec<u8> {
-    let (p, s, t) = WA_VERSION;
+fn user_agent(version: (u64, u64, u64), platform: u64) -> Vec<u8> {
+    let (p, s, t) = version;
     let mut b = Vec::new();
-    put_varint_field(&mut b, 1, 14); // platform = WEB
+    put_varint_field(&mut b, 1, platform); // platform
     put_len_field(&mut b, 2, &app_version(p, s, t)); // appVersion
     put_len_field(&mut b, 3, b"000"); // mcc
     put_len_field(&mut b, 4, b"000"); // mnc
@@ -99,7 +108,7 @@ impl RegistrationPayload {
     /// Encode the complete registration `ClientPayload`.
     pub fn encode(&self) -> Vec<u8> {
         let mut b = Vec::new();
-        put_len_field(&mut b, 5, &user_agent());
+        put_len_field(&mut b, 5, &user_agent(self.app_version, self.platform));
         put_len_field(&mut b, 6, &web_info());
         put_varint_field(&mut b, 12, 1); // connectType = WIFI_UNKNOWN
         put_varint_field(&mut b, 13, 1); // connectReason = USER_ACTIVATED
@@ -124,6 +133,8 @@ mod tests {
             signed_pre_key_signature: vec![0x33; 64],
             build_hash: [0x44; 16],
             device_os: "whatsapp-rs".into(),
+            app_version: WA_VERSION,
+            platform: WA_PLATFORM,
         }
     }
 
