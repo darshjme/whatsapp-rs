@@ -95,15 +95,21 @@ fn run() -> Result<(), String> {
                     println!("    then scan the QR above. (Refs rotate; re-run if it expires.)");
                     return Ok(());
                 }
-                // The entry server typically redirects to an edge location before pairing.
-                if let Some(reason) = node.get_attr("reason") {
-                    let location = node.get_attr("location").unwrap_or("?");
+                if node.tag == "failure" {
+                    let reason = node.get_attr("reason").unwrap_or("?");
+                    let detail = match reason {
+                        "405" => "client out of date — the advertised WhatsApp-web version is too old",
+                        "403" | "401" => "logged out / not authorized",
+                        "402" => "temporarily banned",
+                        "409" => "user agent rejected",
+                        _ => "connection rejected",
+                    };
                     return Err(format!(
-                        "server sent an edge-routing redirect (reason={reason}, location={location}); \
-                         reconnect-with-routing not implemented yet"
+                        "server <failure reason=\"{reason}\"> ({detail}); location={}",
+                        node.get_attr("location").unwrap_or("?")
                     ));
                 }
-                println!("    parsed stanza attrs={:?}", node.attrs);
+                println!("    parsed <{}> attrs={:?}", node.tag, node.attrs);
             }
             Err(e) => println!("    (could not parse this stanza: {e})"),
         }
