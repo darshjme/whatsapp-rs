@@ -151,6 +151,36 @@ mod tests {
         assert!(!verify(&other_pub, b"msg", &sig));
     }
 
+    /// The decisive interop test: our XEdDSA signature must verify under an INDEPENDENT Ed25519
+    /// implementation (ed25519-dalek), using the Montgomery public key converted to Edwards with
+    /// sign bit 0 (exactly what WhatsApp's server / libsignal do). If this passes, the server can
+    /// verify our signed pre-key signature (e_skey_sig against e_ident).
+    #[test]
+    fn xeddsa_signature_verifies_under_ed25519_dalek() {
+        use curve25519_dalek::montgomery::MontgomeryPoint;
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let priv_key = [0x11u8; 32];
+        let mont_pub = public_of(&priv_key);
+        // WhatsApp signs "0x05 || signedPreKeyPub"; use a realistic 33-byte message.
+        let mut msg = vec![0x05u8];
+        msg.extend_from_slice(&[0x22u8; 32]);
+        let sig = sign(&priv_key, &msg);
+
+        // Convert the Montgomery public key to the Edwards form the verifier expects (sign 0).
+        let edwards = MontgomeryPoint(mont_pub)
+            .to_edwards(0)
+            .expect("valid curve point");
+        let vk = VerifyingKey::from_bytes(&edwards.compress().to_bytes())
+            .expect("valid ed25519 public key");
+        let ed_sig = Signature::from_bytes(&sig);
+
+        assert!(
+            vk.verify(&msg, &ed_sig).is_ok(),
+            "our XEdDSA signature must be accepted by an independent Ed25519 verifier"
+        );
+    }
+
     #[test]
     fn deterministic_nonce_is_stable_and_valid() {
         let priv_key = [3u8; 32];
