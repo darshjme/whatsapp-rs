@@ -44,7 +44,8 @@ pub struct SignedPreKey {
 }
 
 /// The full device identity bundle.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "StoredIdentity", try_from = "StoredIdentity")]
 pub struct DeviceIdentity {
     pub noise_key: KeyPair,
     pub identity_key: KeyPair,
@@ -113,7 +114,7 @@ impl DeviceIdentity {
 // --- on-disk representation (base64 strings, stable + human-inspectable) -----------------------
 
 #[derive(Serialize, Deserialize)]
-struct StoredIdentity {
+pub(crate) struct StoredIdentity {
     version: u8,
     noise_private: String,
     noise_public: String,
@@ -125,6 +126,12 @@ struct StoredIdentity {
     signed_pre_key_signature: String,
     registration_id: u32,
     adv_secret: String,
+}
+
+impl From<DeviceIdentity> for StoredIdentity {
+    fn from(d: DeviceIdentity) -> Self {
+        StoredIdentity::from(&d)
+    }
 }
 
 impl From<&DeviceIdentity> for StoredIdentity {

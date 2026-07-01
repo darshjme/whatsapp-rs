@@ -34,6 +34,9 @@ const ADV_DEVICE_PREFIX: [u8; 2] = [6, 1];
 pub struct PairSuccess {
     pub self_signed_identity: Vec<u8>,
     pub key_index: u32,
+    /// The account (phone) identity public key — kept for the session before it is nulled out of the
+    /// self-signed identity sent back to the server.
+    pub account_signature_key: Vec<u8>,
 }
 
 /// Process the `<device-identity>` blob from a `pair-success` IQ.
@@ -94,11 +97,13 @@ pub fn complete_pair_success(
     ]);
     signed.device_signature = wasignal::sign(&device.identity_key.private, &device_msg).to_vec();
 
-    // 4. Null the account signature key; the self-signed identity goes back to the server.
+    // Keep the account key for the session, then null it out of the self-signed identity.
+    let account_signature_key = signed.account_signature_key.clone();
     signed.account_signature_key.clear();
     Ok(PairSuccess {
         self_signed_identity: signed.encode(),
         key_index: inner.key_index,
+        account_signature_key,
     })
 }
 

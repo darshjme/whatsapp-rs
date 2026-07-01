@@ -35,11 +35,14 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    // 1. Device identity (persisted so the session is stable across runs).
-    let mut device = load_or_create_device()?;
-    println!("[*] device identity ready (registration id {})", device.registration_id);
-    println!("    noise pub    : {}", b64(&device.noise_key.public));
-    println!("    identity pub : {}", b64(&device.identity_key.public));
+    // 1. Load or create the session (device identity + optional paired account).
+    let mut session = load_or_create_session()?;
+    println!(
+        "[*] session ready (registration id {}, {})",
+        session.device.registration_id,
+        if session.is_paired() { "paired -> login" } else { "unpaired -> pairing" }
+    );
+    println!("    noise pub    : {}", b64(&session.device.noise_key.public));
 
     // 2. Connect + Noise handshake.
     let mut ws = connect()?;
@@ -65,36 +68,40 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("process ServerHello: {e}"))?;
     println!("[*] ServerHello accepted, server identity verified");
 
-    // 3. msg3: registration ClientPayload -> ClientFinish.
-    let payload = build_registration_payload(&device);
+    // 3. msg3: login ClientPayload if already paired, else registration ClientPayload.
+    let payload = if let Some(account) = &session.account {
+        let jid = waclient::parse_jid(&account.jid).map_err(|e| format!("parse jid: {e}"))?;
+        println!("[*] logging in as user {} (device {})", jid.user, jid.device);
+        build_login_payload(jid.user, u32::from(jid.device))
+    } else {
+        build_registration_payload(&session.device)
+    };
     let (enc_static, enc_payload, mut transport) = hs
-        .finish(&device.noise_key.private, &device.noise_key.public, &payload)
+        .finish(&session.device.noise_key.private, &session.device.noise_key.public, &payload)
         .map_err(|e| format!("finish handshake: {e}"))?;
     let client_finish = waproto::ClientFinish::new(enc_static, enc_payload).encode();
     let mut frame = Vec::new();
     encode_frame(&client_finish, &mut frame).map_err(|e| e.to_string())?;
     ws.send(Message::Binary(frame)).map_err(|e| format!("send ClientFinish: {e}"))?;
-    println!("[*] sent registration ClientPayload\n");
 
-    // 3b. Phone-number (pairing-code) mode: if WAPAIR_PHONE is set, send companion_hello and show
-    //     the code; otherwise we wait for the QR pair-device IQ.
+    // 3b. If unpaired, set up the chosen pairing method (phone code or QR).
     let phone_jid = std::env::var("WAPAIR_PHONE").ok().map(|p| {
         let digits: String = p.chars().filter(|c| c.is_ascii_digit()).collect();
         format!("{digits}@s.whatsapp.net")
     });
     let mut linking: Option<waclient::PhoneLinking> = None;
-    if let Some(jid) = &phone_jid {
+    if session.is_paired() {
+        println!("[*] sent login payload, waiting for <success>...\n");
+    } else if let Some(jid) = &phone_jid {
         let (state, hello_children, code) =
-            waclient::begin_phone_pairing(&device, "1", "Chrome (Windows)");
+            waclient::begin_phone_pairing(&session.device, "1", "Chrome (Windows)");
         let hello = link_code_iq(&random_id(), jid, "companion_hello", true, hello_children);
         send_node(&mut ws, &mut transport, &hello)?;
         linking = Some(state);
-        println!("[+] PHONE PAIRING — on your phone: Linked devices -> Link with phone number,");
-        println!("    then enter this code:\n");
-        println!("        {code}\n");
-        println!("    (Use a SECONDARY/burner number.)\n");
+        println!("[+] PHONE PAIRING - on your phone: Linked devices -> Link with phone number,");
+        println!("    then enter this code:\n\n        {code}\n\n    (Use a SECONDARY/burner number.)\n");
     } else {
-        println!("[*] waiting for pair-device...\n");
+        println!("[*] sent registration ClientPayload, waiting for pair-device...\n");
     }
 
     // 4. Pairing loop: render the QR on pair-device; on pair-success sign the device identity,
@@ -129,7 +136,12 @@ fn run() -> Result<(), String> {
                 return Err(format!("server <failure reason=\"{reason}\"> ({detail})"));
             }
             "success" => {
-                println!("\n*** PAIRED *** this device is now linked to the account.");
+                let who = session
+                    .account
+                    .as_ref()
+                    .map(|a| a.jid.clone())
+                    .unwrap_or_else(|| "linked device".into());
+                println!("\n*** CONNECTED *** logged in as {who}");
                 return Ok(());
             }
             "iq" => {
@@ -148,7 +160,7 @@ fn run() -> Result<(), String> {
                         .collect();
                     if let Some(r) = refs.first() {
                         println!("\n[+] pair-device ({} ref(s)) - scan this QR:\n", refs.len());
-                        show_qr(r, &device);
+                        show_qr(r, &session.device);
                         if !shown_hint {
                             println!("\n[*] On your phone: WhatsApp -> Linked devices -> Link a device -> scan.");
                             println!("    Use a SECONDARY/burner number. The QR refreshes until you scan.");
@@ -157,27 +169,46 @@ fn run() -> Result<(), String> {
                     }
                 } else if let Some(ps) = node.child_nodes().iter().find(|n| n.tag == "pair-success") {
                     println!("\n[+] phone authorized the link - signing device identity...");
+                    let device_node = ps.child_nodes().iter().find(|n| n.tag == "device");
                     let di = ps
                         .child_nodes()
                         .iter()
                         .find(|n| n.tag == "device-identity")
                         .and_then(|n| n.content_bytes())
                         .ok_or("pair-success missing <device-identity>")?;
-                    let result = waclient::complete_pair_success(di, &device)
+                    let result = waclient::complete_pair_success(di, &session.device)
                         .map_err(|e| format!("pair-success: {e}"))?;
-                    let jid = ps
+                    let jid = device_node.and_then(|n| n.get_attr("jid")).unwrap_or("?").to_string();
+                    let lid = device_node.and_then(|n| n.get_attr("lid")).map(str::to_string);
+                    let biz_name = ps
                         .child_nodes()
                         .iter()
-                        .find(|n| n.tag == "device")
-                        .and_then(|n| n.get_attr("jid"))
-                        .unwrap_or("?")
-                        .to_string();
+                        .find(|n| n.tag == "biz")
+                        .and_then(|n| n.get_attr("name"))
+                        .map(str::to_string);
+                    let platform = ps
+                        .child_nodes()
+                        .iter()
+                        .find(|n| n.tag == "platform")
+                        .and_then(|n| n.get_attr("name"))
+                        .map(str::to_string);
                     send_node(
                         &mut ws,
                         &mut transport,
                         &pair_device_sign(&id, result.key_index, &result.self_signed_identity),
                     )?;
-                    println!("[+] sent pair-device-sign; finalizing as {jid} ...");
+                    // Persist the paired account so we can log back in without re-pairing.
+                    session.account = Some(waclient::Account {
+                        jid: jid.clone(),
+                        lid,
+                        account_signature_key: result.account_signature_key,
+                        signed_device_identity: result.self_signed_identity,
+                        push_name: None,
+                        platform,
+                        business_name: biz_name,
+                    });
+                    save_session(&session)?;
+                    println!("[+] paired identity saved; finalizing as {jid} ...");
                 } else if let Some(lc) =
                     node.child_nodes().iter().find(|n| n.tag == "link_code_companion_reg")
                 {
@@ -211,9 +242,11 @@ fn run() -> Result<(), String> {
                         .find(|n| n.tag == "primary_identity_pub")
                         .and_then(|n| n.content_bytes());
                     if let (Some(w), Some(pid)) = (wrapped, primary_id) {
-                        let (adv, finish_children) = waclient::finish_phone_pairing(&device, state, w, pid)
-                            .map_err(|e| format!("phone finish: {e}"))?;
-                        device.adv_secret = adv;
+                        let (adv, finish_children) =
+                            waclient::finish_phone_pairing(&session.device, state, w, pid)
+                                .map_err(|e| format!("phone finish: {e}"))?;
+                        session.device.adv_secret = adv; // derived adv secret replaces the random one
+                        save_session(&session)?;
                         let jid = phone_jid.clone().unwrap_or_default();
                         let finish = link_code_iq(&random_id(), &jid, "companion_finish", false, finish_children);
                         send_node(&mut ws, &mut transport, &finish)?;
@@ -292,23 +325,27 @@ fn pair_device_sign(id: &str, key_index: u32, self_signed: &[u8]) -> Node {
 
 // --------------------------------------------------------------------------------------------
 
-fn load_or_create_device() -> Result<DeviceIdentity, String> {
+fn load_or_create_session() -> Result<waclient::Session, String> {
     if let Ok(json) = fs::read_to_string(SESSION_FILE) {
-        if let Ok(d) = DeviceIdentity::from_json(&json) {
-            println!("[*] loaded existing device identity from {SESSION_FILE}");
-            return Ok(d);
+        if let Ok(s) = waclient::Session::from_json(&json) {
+            println!("[*] loaded session from {SESSION_FILE}");
+            return Ok(s);
         }
     }
-    let d = DeviceIdentity::generate();
-    let json = d.to_json().map_err(|e| e.to_string())?;
-    fs::write(SESSION_FILE, json).map_err(|e| format!("save session: {e}"))?;
+    let s = waclient::Session::new(DeviceIdentity::generate());
+    save_session(&s)?;
     println!("[*] generated a new device identity -> {SESSION_FILE}");
-    Ok(d)
+    Ok(s)
 }
 
-fn build_registration_payload(device: &DeviceIdentity) -> Vec<u8> {
-    // Version + platform are overridable for fast iteration once we know the current accepted value:
-    //   WAPAIR_VERSION=2.3000.1234567890  WAPAIR_PLATFORM=14  cargo run -p wapair
+fn save_session(session: &waclient::Session) -> Result<(), String> {
+    let json = session.to_json().map_err(|e| e.to_string())?;
+    fs::write(SESSION_FILE, json).map_err(|e| format!("save session: {e}"))
+}
+
+/// Resolve the advertised version + platform, overridable for fast iteration:
+///   WAPAIR_VERSION=2.3000.1234567890  WAPAIR_PLATFORM=14  cargo run -p wapair
+fn version_and_platform() -> ((u64, u64, u64), u64) {
     let app_version = std::env::var("WAPAIR_VERSION")
         .ok()
         .and_then(|s| parse_version(&s))
@@ -317,7 +354,24 @@ fn build_registration_payload(device: &DeviceIdentity) -> Vec<u8> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(waproto::client_payload::WA_PLATFORM);
+    (app_version, platform)
+}
 
+fn build_login_payload(username: u64, device: u32) -> Vec<u8> {
+    let (app_version, platform) = version_and_platform();
+    let (p, s, t) = app_version;
+    println!("[*] advertising version {p}.{s}.{t}, platform {platform}");
+    waproto::LoginPayload {
+        username,
+        device,
+        app_version,
+        platform,
+    }
+    .encode()
+}
+
+fn build_registration_payload(device: &DeviceIdentity) -> Vec<u8> {
+    let (app_version, platform) = version_and_platform();
     let (p, s, t) = app_version;
     let version = format!("{p}.{s}.{t}");
     let build_hash: [u8; 16] = Md5::digest(version.as_bytes()).into();

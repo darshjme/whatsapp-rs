@@ -142,10 +142,40 @@ impl RegistrationPayload {
     }
 }
 
+/// The **login** `ClientPayload`, sent (encrypted) in Noise message 3 when reconnecting an already
+/// linked device (whatsmeow `getLoginPayload`). Uses `username` + `device` from the paired JID and
+/// the login flags, and does NOT include the registration `devicePairingData`.
+pub struct LoginPayload {
+    /// The numeric user part of our device JID.
+    pub username: u64,
+    /// The device index of our device JID.
+    pub device: u32,
+    pub app_version: (u64, u64, u64),
+    pub platform: u64,
+}
+
+impl LoginPayload {
+    /// Encode the login `ClientPayload`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::new();
+        put_varint_field(&mut b, 1, self.username); // username
+        put_varint_field(&mut b, 3, 1); // passive = true
+        put_len_field(&mut b, 5, &user_agent(self.app_version, self.platform));
+        put_len_field(&mut b, 6, &web_info());
+        put_varint_field(&mut b, 12, 1); // connectType = WIFI_UNKNOWN
+        put_varint_field(&mut b, 13, 1); // connectReason = USER_ACTIVATED
+        put_varint_field(&mut b, 18, u64::from(self.device)); // device
+        put_varint_field(&mut b, 24, 1); // lc = 1
+        put_varint_field(&mut b, 33, 1); // pull = true
+        put_varint_field(&mut b, 41, 1); // lidDbMigrated = true
+        b
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pb::{get_field, iter_len_fields};
+    use crate::pb::{first_varint, get_field, iter_len_fields, parse};
 
     fn sample() -> RegistrationPayload {
         RegistrationPayload {
@@ -168,6 +198,22 @@ mod tests {
         assert!(get_field(&fields, 5).is_some(), "userAgent present");
         assert!(get_field(&fields, 6).is_some(), "webInfo present");
         assert!(get_field(&fields, 19).is_some(), "devicePairingData present");
+    }
+
+    #[test]
+    fn login_payload_has_username_device_and_flags() {
+        let p = LoginPayload {
+            username: 447_700_900_123,
+            device: 23,
+            app_version: WA_VERSION,
+            platform: WA_PLATFORM,
+        };
+        let f = parse(&p.encode()).unwrap();
+        assert_eq!(first_varint(&f, 1), Some(447_700_900_123)); // username
+        assert_eq!(first_varint(&f, 18), Some(23)); // device
+        assert_eq!(first_varint(&f, 3), Some(1)); // passive
+        assert_eq!(first_varint(&f, 33), Some(1)); // pull
+        assert_eq!(first_varint(&f, 41), Some(1)); // lidDbMigrated
     }
 
     #[test]

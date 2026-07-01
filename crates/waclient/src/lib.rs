@@ -14,12 +14,16 @@
 #![forbid(unsafe_code)]
 
 pub mod device;
+pub mod jid;
 pub mod pairing;
 pub mod phone;
+pub mod session;
 
 pub use device::{DeviceIdentity, KeyPair, SignedPreKey};
+pub use jid::{parse_jid, Jid};
 pub use pairing::{complete_pair_success, qr_payload, PairSuccess, RefQueue};
 pub use phone::{begin_phone_pairing, finish_phone_pairing, PhoneLinking};
+pub use session::{Account, Session};
 
 /// Errors from the client layer.
 #[derive(Debug, thiserror::Error)]

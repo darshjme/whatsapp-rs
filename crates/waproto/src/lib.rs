@@ -16,7 +16,7 @@ pub mod handshake;
 pub mod pb;
 
 pub use adv::{AdvDeviceIdentity, AdvSignedDeviceIdentity, AdvSignedDeviceIdentityHmac};
-pub use client_payload::RegistrationPayload;
+pub use client_payload::{LoginPayload, RegistrationPayload};
 pub use handshake::{ClientFinish, ClientHello, HandshakeMessage, ServerHello};
 
 /// Errors from protobuf decoding.
